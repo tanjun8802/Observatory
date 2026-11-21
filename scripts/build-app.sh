@@ -12,6 +12,10 @@ cp "$binary_dir/Observatory" "$contents/MacOS/Observatory"
 cp Packaging/Info.plist "$contents/Info.plist"
 swift Packaging/make-icon.swift "$PWD/.build/Observatory.iconset"
 iconutil -c icns "$PWD/.build/Observatory.iconset" -o "$contents/Resources/Observatory.icns"
+# File Provider can attach Finder metadata to bundles in a synced Documents folder.
+if xattr -p com.apple.FinderInfo "$app_dir" >/dev/null 2>&1; then
+    xattr -d com.apple.FinderInfo "$app_dir"
+fi
 codesign --force --sign - "$app_dir"
 codesign --verify --strict "$app_dir"
 echo "$app_dir"
