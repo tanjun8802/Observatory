@@ -1,0 +1,25 @@
+.build/
+.swiftpm/
+.DS_Store
+.nodeterm/
+.hallmark/
+
+# Local boards and cached readings
+board.json
+board.json.*
+boards/
+
+# Local credentials
+.env
+.env.*
+*.pem
+*.key
+credentials.json
+secrets.json
+auth.json
+
+# Disposable QA output
+/qa/
+/tmp/
+/artifacts/
+*.xcresult/
