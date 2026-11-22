@@ -81,6 +81,55 @@ struct CodexReadingTests {
         #expect(query.value == "The station has not published a reading." && query.presentation == nil)
     }
 
+    @Test func partialListKeepsVerifiedRowsAndIdentifiesMissingData() throws {
+        let changes: [String: Any] = [
+            "status": "partial", "kind": "list",
+            "answer": "One published record. Live competition status is unavailable.",
+            "metrics": [], "rows": [["title": "Example competitor", "value": "7.10 s",
+                                      "detail": "3×3 single · Example Open", "url": NSNull()]]
+        ]
+        let reply = try response(changes)
+        let reading = try CodexReading.reading(from: reply, scheduled: true, prompt: "Live competitions and records")
+        #expect(reading.value.contains("unavailable"))
+        #expect(reading.presentation?.kind.rawValue == "list")
+        #expect(reading.presentation?.isPartial == true)
+        #expect(reading.presentation?.rows?.first?.value == "7.10 s")
+        let unverified = try response(changes, searched: false)
+        #expect(throws: CodexError.self) {
+            try CodexReading.reading(from: unverified, scheduled: true, prompt: "Live competitions and records")
+        }
+    }
+
+    @Test func suppliedListNeedsNoExternalEvidence() throws {
+        let changes: [String: Any] = [
+            "kind": "list", "liveFacts": false, "sourceName": NSNull(), "sourceURL": NSNull(), "evidence": NSNull(),
+            "answer": "Two race results.", "metrics": [],
+            "rows": [["title": "Ada", "detail": "North", "value": "7.10 s"], ["title": "Jo", "detail": "West", "value": "8.30 s"]]
+        ]
+        let reading = try CodexReading.reading(from: response(changes, searched: false), scheduled: false,
+                                               prompt: "List Ada, North, 7.10s and Jo, West, 8.30s.")
+        #expect(reading.presentation?.rows?.map(\.title) == ["Ada", "Jo"])
+    }
+
+    @Test func listsKeepVerifiedEmptyResultsAndOnlyEnableValidLinks() throws {
+        let list: [String: Any] = ["kind": "list", "rows": [], "answer": "No events are in progress.", "metrics": []]
+        let empty = try CodexReading.reading(from: response(list), scheduled: true, prompt: "Current events")
+        #expect(empty.presentation?.rows == [] && empty.presentation?.isPartial == nil)
+        let changes = list.merging(["rows": [["title": "Event", "detail": "London", "value": "", "url": "file:///tmp/local"]]]) { _, new in new }
+        let reading = try CodexReading.reading(from: response(changes), scheduled: false, prompt: "Current events")
+        #expect(reading.presentation?.rows == [FeedRow(title: "Event", detail: "London", value: "")])
+    }
+
+    @Test func failedFeedShowsBriefReasonInsteadOfMarkdownReport() throws {
+        let reply = try response(["status": "inconclusive", "answer": "Live status is unavailable.\n\n| Date | Result |\n|---|---|"])
+        do {
+            _ = try CodexReading.reading(from: reply, scheduled: true, prompt: "Live status")
+            Issue.record("Expected a failed refresh")
+        } catch let error as CodexError {
+            #expect(error.message == "Live status is unavailable.")
+        }
+    }
+
     @Test func legacyReadingsStillDecodeAndEncodeWithoutPresentation() throws {
         let original = Data(#"{"value":"42","detail":"Codex","observedAt":0}"#.utf8)
         let reading = try JSONDecoder().decode(Reading.self, from: original)
@@ -125,8 +174,18 @@ struct CodexReadingTests {
             let properties = try #require(schema["properties"] as? [String: Any])
             #expect(Set(schema["required"] as? [String] ?? []) == Set(properties.keys))
             let input = try String(contentsOf: dir.appending(path: "input"), encoding: .utf8)
+            #expect(try input.contains(CodexReading.readingInstructions))
             #expect(input.contains("London in Fahrenheit"))
         }
-        #expect(try String(contentsOf: dir.appending(path: "calls"), encoding: .utf8) == "call\ncall\n")
+        let envelope = "{\"result\":" + data.text + "}"
+        try envelope.write(to: dir.appending(path: "reply"), atomically: true, encoding: .utf8)
+        guard case .answer(let answer) = try await DashboardQuery.submit("Weather now", client: .init(executable: cli)) else {
+            Issue.record("Expected a dashboard answer")
+            return
+        }
+        #expect(answer.presentation?.kind == .weather)
+        let queryInput = try String(contentsOf: dir.appending(path: "input"), encoding: .utf8)
+        #expect(try queryInput.contains(CodexReading.readingInstructions))
+        #expect(try String(contentsOf: dir.appending(path: "calls"), encoding: .utf8) == "call\ncall\ncall\n")
     }
 }

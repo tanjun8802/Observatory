@@ -16,7 +16,7 @@ enum DashboardQuery {
             \(FeedProposal.draftingInstructions)
 
             When answering a question:
-            \(CodexReading.readingInstructions)
+            \(try CodexReading.readingInstructions)
 
             User request:
             \(question)

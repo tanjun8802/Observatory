@@ -71,8 +71,22 @@ struct FeedMetric: Codable, Equatable {
     var unit: String
 }
 
+struct FeedRow: Codable, Equatable {
+    var title: String
+    var detail: String
+    var value: String
+    var url: String? = nil
+
+    var link: URL? {
+        guard let url, let link = URL(string: url, encodingInvalidCharacters: false),
+              link.scheme?.lowercased() == "https", let host = link.host(), !host.isEmpty,
+              link.user() == nil, link.password() == nil else { return nil }
+        return link
+    }
+}
+
 struct FeedPresentation: Codable, Equatable {
-    enum Kind: String, Codable { case weather, metrics, summary }
+    enum Kind: String, Codable { case weather, metrics, summary, list }
 
     var kind: Kind
     var location: String? = nil
@@ -81,6 +95,8 @@ struct FeedPresentation: Codable, Equatable {
         didSet { weatherSymbol = Self.allowedSymbol(weatherSymbol) }
     }
     var metrics: [FeedMetric] = []
+    var rows: [FeedRow]? = nil
+    var isPartial: Bool? = nil
     var sourceName: String? = nil
     var sourceURL: URL? = nil
 
@@ -94,12 +110,15 @@ struct FeedPresentation: Codable, Equatable {
     }
 
     init(kind: Kind, location: String? = nil, condition: String? = nil, weatherSymbol: String? = nil,
-         metrics: [FeedMetric] = [], sourceName: String? = nil, sourceURL: URL? = nil) {
+         metrics: [FeedMetric] = [], rows: [FeedRow]? = nil, isPartial: Bool? = nil,
+         sourceName: String? = nil, sourceURL: URL? = nil) {
         self.kind = kind
         self.location = location
         self.condition = condition
         self.weatherSymbol = Self.allowedSymbol(weatherSymbol)
         self.metrics = metrics
+        self.rows = rows
+        self.isPartial = isPartial
         self.sourceName = sourceName
         self.sourceURL = sourceURL
     }
@@ -111,6 +130,8 @@ struct FeedPresentation: Codable, Equatable {
                       condition: fields.decodeIfPresent(String.self, forKey: .condition),
                       weatherSymbol: fields.decodeIfPresent(String.self, forKey: .weatherSymbol),
                       metrics: fields.decode([FeedMetric].self, forKey: .metrics),
+                      rows: fields.decodeIfPresent([FeedRow].self, forKey: .rows),
+                      isPartial: fields.decodeIfPresent(Bool.self, forKey: .isPartial),
                       sourceName: fields.decodeIfPresent(String.self, forKey: .sourceName),
                       sourceURL: fields.decodeIfPresent(URL.self, forKey: .sourceURL))
     }

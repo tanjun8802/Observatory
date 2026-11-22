@@ -9,6 +9,7 @@ contents="$app_dir/Contents"
 
 mkdir -p "$contents/MacOS" "$contents/Resources"
 cp "$binary_dir/Observatory" "$contents/MacOS/Observatory"
+ditto "$binary_dir/Observatory_Observatory.bundle" "$contents/Resources/Observatory_Observatory.bundle"
 cp Packaging/Info.plist "$contents/Info.plist"
 swift Packaging/make-icon.swift "$PWD/.build/Observatory.iconset"
 iconutil -c icns "$PWD/.build/Observatory.iconset" -o "$contents/Resources/Observatory.icns"

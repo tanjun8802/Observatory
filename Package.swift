@@ -6,7 +6,7 @@ let package = Package(
     platforms: [.macOS(.v14)],
     products: [.executable(name: "Observatory", targets: ["Observatory"])],
     targets: [
-        .executableTarget(name: "Observatory"),
+        .executableTarget(name: "Observatory", resources: [.copy("Skills")]),
         .testTarget(name: "ObservatoryTests", dependencies: ["Observatory"])
     ]
 )

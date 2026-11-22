@@ -11,8 +11,13 @@ struct FeedReadingView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             if let presentation = reading.presentation {
+                if presentation.isPartial == true { PartialReadingLabel() }
                 let metrics = presentation.metrics.filter { $0.value.isFinite }
-                if presentation.kind != .summary, let first = metrics.first {
+                if presentation.kind == .list {
+                    FeedListView(introduction: reading.value, rows: presentation.rows ?? [])
+                        .frame(idealHeight: 220, maxHeight: 280)
+                    attribution(presentation)
+                } else if presentation.kind != .summary, let first = metrics.first {
                     if presentation.kind == .weather {
                         weather(presentation, primary: first, secondary: Array(metrics.dropFirst()))
                     } else {
@@ -183,6 +188,73 @@ struct FeedReadingView: View {
     }
 }
 
+struct PartialReadingLabel: View {
+    @Environment(\.boardPalette) private var ink
+
+    var body: some View {
+        Label("Partial update", systemImage: "circle.lefthalf.filled")
+            .font(.caption.weight(.medium))
+            .foregroundStyle(ink.secondary)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel("Partial update")
+    }
+}
+
+/// Keeps the introduction and every row within one vertically scrollable reading.
+struct FeedListView: View {
+    let introduction: String
+    let rows: [FeedRow]
+    @Environment(\.boardPalette) private var ink
+
+    var body: some View {
+        ScrollView(.vertical) {
+            LazyVStack(alignment: .leading, spacing: 0) {
+                if !introduction.isEmpty || rows.isEmpty {
+                    Text(verbatim: introduction.isEmpty ? "No items." : introduction)
+                        .font(.callout)
+                        .foregroundStyle(ink.text)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .textSelection(.enabled)
+                        .padding(.vertical, 5)
+                }
+                ForEach(rows.indices, id: \.self) { index in
+                    let row = rows[index]
+                    if index > 0 || !introduction.isEmpty {
+                        Rectangle().fill(ink.rule).frame(height: 1).accessibilityHidden(true)
+                    }
+                    VStack(alignment: .leading, spacing: 3) {
+                        if let url = row.link {
+                            Link(destination: url) {
+                                (Text(verbatim: row.title) + Text(" ") + Text(Image(systemName: "arrow.up.right")))
+                            }
+                            .buttonStyle(.plain)
+                            .foregroundStyle(ink.accent)
+                            .accessibilityLabel(Text(verbatim: row.title))
+                            .help(url.absoluteString)
+                        } else {
+                            Text(verbatim: row.title).foregroundStyle(ink.text)
+                        }
+                        if !row.detail.isEmpty {
+                            Text(verbatim: row.detail).font(.caption).foregroundStyle(ink.secondary)
+                        }
+                        if !row.value.isEmpty {
+                            Text(verbatim: row.value).font(.callout.weight(.medium)).foregroundStyle(ink.text)
+                        }
+                    }
+                    .font(.callout.weight(.semibold))
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.vertical, 5)
+                    .accessibilityElement(children: .contain)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.trailing, 6)
+        }
+        .scrollBounceBehavior(.basedOnSize)
+        .accessibilityLabel("Reading items")
+    }
+}
+
 /// The tile shows the primary measurement. Its Details button opens the complete reading.
 struct TileReading: View {
     let reading: Reading
@@ -281,6 +353,10 @@ private struct MetricValue: View {
 
 extension Reading {
     var compactTileValue: String {
+        if presentation?.kind == .list {
+            let count = presentation?.rows?.count ?? 0
+            return count == 1 ? "1 item" : "\(count) items"
+        }
         guard let metric = presentation?.metrics.first else { return value }
         let number = abs(metric.value) >= 1_000_000
             ? metric.value.formatted(.number.notation(.compactName).precision(.significantDigits(1...3)))

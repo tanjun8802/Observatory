@@ -120,7 +120,7 @@ struct FeedProposal: Decodable {
     static var draftingInstructions: String {
         """
             Draft a read-only dashboard feed for the following request. Return a short title and a self-contained
-            prompt to run at each refresh. Preserve the subject, source and constraints. Extract a local daily time
+            prompt to run at each refresh. Preserve every requested field, source, unit and presentation preference in the recurring prompt. Extract a local daily time
             or a repeat interval in whole minutes. For a one-time scheduled request choose once and set runAt to an ISO 8601
             timestamp with seconds and UTC offset. Otherwise use an empty runAt. Use manual if no timing is specified.
             The current instant is \(ISO8601DateFormatter().string(from: .now)).

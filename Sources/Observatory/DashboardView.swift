@@ -453,16 +453,20 @@ private struct FeedCard: View {
 
     var body: some View {
         GeometryReader { proxy in
-            ScrollView(.vertical) {
-                if width < 150 || proxy.size.height < 130 {
-                    compactTile
-                } else if width < 415 {
-                    tile(minimumHeight: proxy.size.height)
-                } else {
-                    contents
+            if let reading, reading.presentation?.kind == .list, width >= 125, proxy.size.height >= 115 {
+                listTile(reading)
+            } else {
+                ScrollView(.vertical) {
+                    if width < 150 || proxy.size.height < 130 {
+                        compactTile
+                    } else if width < 415 {
+                        tile(minimumHeight: proxy.size.height)
+                    } else {
+                        contents
+                    }
                 }
+                .scrollBounceBehavior(.basedOnSize)
             }
-            .scrollBounceBehavior(.basedOnSize)
         }
         .popover(isPresented: $showingDetails) {
             ScrollView { contents }
@@ -476,6 +480,25 @@ private struct FeedCard: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
+    private func listTile(_ reading: Reading) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 4) {
+                Text(monitor.title)
+                    .font(.system(size: 14, weight: .semibold))
+                    .lineLimit(2).help(monitor.title)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                if width < 210 { actionsMenu(compact: true) } else { actions }
+            }
+            if reading.presentation?.isPartial == true { PartialReadingLabel() }
+            FeedListView(introduction: reading.value, rows: reading.presentation?.rows ?? [])
+            if let error {
+                Text(verbatim: error).font(.caption).foregroundStyle(ink.coral).lineLimit(2)
+            }
+            HStack { status; Spacer(minLength: 4); detailsButton }
+        }
+        .padding(8)
+    }
+
     private var compactTile: some View {
         VStack(alignment: .leading, spacing: 1) {
             HStack(spacing: 2) {
@@ -484,6 +507,7 @@ private struct FeedCard: View {
                     .help(monitor.title)
                 actionsMenu(compact: true)
             }
+            if reading?.presentation?.isPartial == true { PartialReadingLabel() }
             Button { showingDetails = true } label: {
                 VStack(alignment: .leading, spacing: 1) {
                     if let reading {
@@ -525,6 +549,7 @@ private struct FeedCard: View {
             }
             Spacer(minLength: 0)
             if let reading {
+                if reading.presentation?.isPartial == true { PartialReadingLabel() }
                 TileReading(reading: reading, kind: monitor.kind)
                 if monitor.kind != .codex, !reading.detail.isEmpty {
                     Text(verbatim: reading.detail).font(.caption).foregroundStyle(ink.secondary).lineLimit(2)
@@ -646,6 +671,7 @@ private struct FeedCard: View {
             if let error {
                 Label(error, systemImage: "exclamationmark.circle")
                     .font(.system(size: 12)).foregroundStyle(ink.coral)
+                    .lineLimit(3)
                     .textSelection(.enabled)
             }
             if let credential = credentialToConnect {
