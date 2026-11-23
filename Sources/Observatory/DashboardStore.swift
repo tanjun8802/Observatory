@@ -1,11 +1,17 @@
 import Combine
 import Foundation
+import Security
 
 private struct ProviderKeyReadFailure: LocalizedError {
     let provider: Credential
     let cause: Error
     var errorDescription: String? {
-        "Couldn’t read the \(provider.providerName) API key from Keychain. \(cause.localizedDescription)"
+        let error = cause as NSError
+        if error.domain == NSOSStatusErrorDomain,
+           [errSecInteractionNotAllowed, errSecUserCanceled, errSecAuthFailed].contains(OSStatus(error.code)) {
+            return "Keychain access needed for \(provider.providerName). Choose Retry failed and allow Observatory to read the saved key."
+        }
+        return "Couldn’t read the \(provider.providerName) API key from Keychain. \(cause.localizedDescription)"
     }
 }
 
@@ -30,6 +36,13 @@ extension MonitorKind {
     var refreshInterval: TimeInterval { self == .flight ? 3600 : 300 }
 }
 
+extension Monitor {
+    var credential: Credential? {
+        if kind == .codex, RoundTripFlightFeed.search(for: self) != nil { return .serpapi }
+        return kind.credential
+    }
+}
+
 @MainActor
 final class DashboardStore: ObservableObject {
     @Published private(set) var monitors: [Monitor] = []
@@ -42,10 +55,10 @@ final class DashboardStore: ObservableObject {
 
     var authenticationIssues: Set<UUID> {
         Set(monitors.compactMap { monitor in
-            guard monitor.kind.credential != nil, let error = errors[monitor.id] else { return nil }
+            guard monitor.credential != nil, let error = errors[monitor.id] else { return nil }
             let message = error.lowercased()
             if message.contains("api key"),
-               ["enter", "missing", "invalid", "required", "add", "not configured", "couldn’t read"].contains(where: message.contains) {
+               ["enter", "missing", "invalid", "required", "add", "not configured"].contains(where: message.contains) {
                 return monitor.id
             }
             switch message {
@@ -58,14 +71,21 @@ final class DashboardStore: ObservableObject {
     }
 
     private let file: URL
-    private let fetch: (Monitor) async throws -> Reading
+    private static let providerKeys = ProviderKeyReader { provider, interactive in
+        try await KeyStore.shared.read(provider, interactive: interactive)
+    }
+    private let fetch: (Monitor, Bool) async throws -> Reading
     private var jobs: [UUID: Task<Void, Never>] = [:]
     private var preserveUnreadableFile = false
 
     init(file: URL = URL.applicationSupportDirectory.appending(path: "Observatory/board.json"),
-         fetch: @escaping (Monitor) async throws -> Reading = DashboardStore.fetchReading) {
+         fetch: ((Monitor) async throws -> Reading)? = nil) {
         self.file = file
-        self.fetch = fetch
+        if let fetch {
+            self.fetch = { monitor, _ in try await fetch(monitor) }
+        } else {
+            self.fetch = Self.fetchReading
+        }
         do {
             let snapshot = try JSONDecoder().decode(BoardSnapshot.self, from: Data(contentsOf: file))
             monitors = snapshot.monitors
@@ -81,11 +101,11 @@ final class DashboardStore: ObservableObject {
         }
     }
 
-    nonisolated private static func fetchReading(_ monitor: Monitor) async throws -> Reading {
+    private static func fetchReading(_ monitor: Monitor, interactive: Bool) async throws -> Reading {
         var key: String?
-        if let provider = monitor.kind.credential {
+        if let provider = monitor.credential {
             do {
-                key = try await KeyStore.shared.read(provider)
+                key = try await providerKeys.read(provider, interactive: interactive)
             } catch {
                 throw ProviderKeyReadFailure(provider: provider, cause: error)
             }
@@ -187,7 +207,7 @@ final class DashboardStore: ObservableObject {
     }
 
     func credentialsChanged(_ provider: String) {
-        for monitor in monitors where !monitor.isPaused && monitor.kind.credential?.rawValue == provider {
+        for monitor in monitors where !monitor.isPaused && monitor.credential?.rawValue == provider {
             cancelRefresh(monitor.id)
             refresh(monitor)
         }
@@ -204,14 +224,14 @@ final class DashboardStore: ObservableObject {
     }
 
     func refreshOnWakeOrLaunch() {
-        for monitor in monitors where !monitor.isPaused && monitor.kind != .codex { refresh(monitor) }
+        for monitor in monitors where !monitor.isPaused && monitor.kind != .codex { refresh(monitor, interactive: false) }
         refreshDue()
     }
 
     func retryAfterReconnect() {
         for monitor in monitors where !monitor.isPaused && errors[monitor.id] != nil {
             if monitor.kind == .codex, monitor.schedule == .manual { continue }
-            refresh(monitor)
+            refresh(monitor, interactive: false)
         }
     }
 
@@ -226,18 +246,18 @@ final class DashboardStore: ObservableObject {
 
     func refreshDue(now: Date = .now) {
         for monitor in monitors where nextRefresh(for: monitor).map({ $0 <= now }) == true {
-            refresh(monitor)
+            refresh(monitor, interactive: false)
         }
     }
 
-    func refresh(_ monitor: Monitor) {
+    func refresh(_ monitor: Monitor, interactive: Bool = true) {
         let id = monitor.id
         guard jobs[id] == nil, let current = monitors.first(where: { $0.id == id }) else { return }
         refreshing.insert(id)
         jobs[id] = Task {
             do {
                 try Task.checkCancellation()
-                let result = try await fetch(current)
+                let result = try await fetch(current, interactive)
                 guard !Task.isCancelled else { return }
                 readings[id] = result
                 errors.removeValue(forKey: id)

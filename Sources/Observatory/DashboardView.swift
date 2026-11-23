@@ -229,7 +229,7 @@ struct DashboardView: View {
                                  nextRun: store.nextRefresh(for: monitor),
                                  refreshing: store.refreshing.contains(monitor.id), now: tick.date,
                                  width: width, refresh: { store.refresh(monitor) },
-                                 credentialToConnect: authenticationIssues.contains(monitor.id) ? monitor.kind.credential : nil,
+                                 credentialToConnect: authenticationIssues.contains(monitor.id) ? monitor.credential : nil,
                                  connect: connect, edit: { edit(monitor) },
                                  setTheme: { store.setTheme($0, for: monitor.id) },
                                  togglePause: { store.setPaused(!monitor.isPaused, for: monitor) },
@@ -532,6 +532,15 @@ private struct FeedCard: View {
             .buttonStyle(.plain)
             .help("Show full reading and feed details")
             .accessibilityLabel("Details for \(monitor.title)")
+            if let error, reading != nil {
+                Button(action: refresh) {
+                    Label("Retry update", systemImage: "arrow.clockwise")
+                        .font(.caption).foregroundStyle(ink.coral)
+                }
+                .buttonStyle(.plain).disabled(refreshing)
+                .help(error)
+                .accessibilityHint("The tile is showing its last successful reading.")
+            }
         }
         .padding(.horizontal, 7)
         .padding(.vertical, 3)
@@ -557,9 +566,7 @@ private struct FeedCard: View {
             } else if let error {
                 Text(error).font(.callout).foregroundStyle(ink.coral).lineLimit(2)
             }
-            if let credential = credentialToConnect {
-                Button("Connect " + credential.providerName) { connect(credential) }.controlSize(.small)
-            }
+            providerRecovery
             Spacer(minLength: 0)
             ViewThatFits(in: .horizontal) {
                 HStack { status; Spacer(minLength: 4); detailsButton }
@@ -569,6 +576,16 @@ private struct FeedCard: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(10)
         .frame(minHeight: minimumHeight, alignment: .topLeading)
+    }
+
+    @ViewBuilder private var providerRecovery: some View {
+        if let credential = credentialToConnect {
+            Button("Connect " + credential.providerName) { connect(credential) }
+                .controlSize(.small)
+        }
+        if error != nil, let search = RoundTripFlightFeed.search(for: monitor) {
+            Link("Open Google Flights", destination: search.publicURL).font(.caption)
+        }
     }
 
     private var detailsButton: some View {
@@ -674,12 +691,7 @@ private struct FeedCard: View {
                     .lineLimit(3)
                     .textSelection(.enabled)
             }
-            if let credential = credentialToConnect {
-                Button(credential == .finnhub ? "Connect Finnhub" : "Connect SerpApi") {
-                    connect(credential)
-                }
-                .controlSize(.small)
-            }
+            providerRecovery
             if monitor.kind == .codex || reading != nil || checked != nil {
                 Rectangle().fill(ink.rule).frame(height: 1)
                 ViewThatFits(in: .horizontal) {

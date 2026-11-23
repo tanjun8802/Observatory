@@ -210,6 +210,70 @@ struct DashboardStoreTests {
         #expect(requests == 1)
     }
 
+    @Test func concurrentStockRefreshesShareOneKeychainReadAndRetryCanPrompt() async throws {
+        var calls: [Bool] = []
+        let reader = ProviderKeyReader { provider, interactive in
+            #expect(provider == .finnhub)
+            calls.append(interactive)
+            try await Task.sleep(for: .milliseconds(10))
+            if !interactive { throw CodexError("User interaction required") }
+            return "fixture"
+        }
+        async let a = try? reader.read(.finnhub, interactive: false)
+        async let b = try? reader.read(.finnhub, interactive: false)
+        let failed = await [a, b]
+        #expect(failed.allSatisfy { $0 == nil } && calls == [false])
+        async let first = reader.read(.finnhub, interactive: true)
+        async let second = reader.read(.finnhub, interactive: true)
+        let retry = try await [first, second]
+        #expect(retry == ["fixture", "fixture"] && calls == [false, true])
+        _ = try? await reader.read(.finnhub, interactive: false)
+        #expect(calls == [false, true, false])
+    }
+
+    @Test func savingFlightKeyRetriesOnlyTheMatchingScheduledFeed() async throws {
+        let file = boardFile()
+        defer { try? FileManager.default.removeItem(at: file.deletingLastPathComponent()) }
+        let flight = Monitor(kind: .codex, title: "Fare search",
+                             prompt: "Three cheapest round-trip flights from SFO to JFK, departing 2030-02-03 and returning 2030-02-20. One adult in economy. Prices in GBP.")
+        try #require(flight.credential == .serpapi)
+        let other = Monitor(kind: .codex, title: "General question", prompt: "Explain how airlines set prices")
+        var calls: [UUID] = []
+        var connected = false
+        let store = DashboardStore(file: file) { monitor in
+            calls.append(monitor.id)
+            if !connected {
+                return try await FeedProvider.fetch(monitor, key: nil) { _ in
+                    throw CodexError("Unexpected network call")
+                }
+            }
+            return first
+        }
+        store.add(other, initialReading: first)
+        store.add(flight)
+        try await waitForRefresh(store)
+        #expect(store.authenticationIssues == [flight.id])
+        connected = true
+        store.credentialsChanged("serpapi")
+        try await waitForRefresh(store)
+        #expect(calls == [flight.id, flight.id])
+        #expect(store.errors.isEmpty && store.readings[flight.id] == first)
+    }
+
+    @Test func canceledKeychainReadDoesNotAskForReplacementKey() async throws {
+        let file = boardFile()
+        defer { try? FileManager.default.removeItem(at: file.deletingLastPathComponent()) }
+        let stock = Monitor(kind: .stock, title: "Test quote", symbol: "TEST")
+        let store = DashboardStore(file: file) { _ in
+            throw CodexError("Couldn’t read the Finnhub API key from Keychain. User canceled the operation.")
+        }
+        store.add(stock, initialReading: first)
+        store.refresh(stock)
+        try await waitForRefresh(store)
+        #expect(store.authenticationIssues.isEmpty)
+        #expect(store.errors[stock.id] != nil && store.readings[stock.id] == first)
+    }
+
     @Test func legacyAndCurrentCredentialFailuresAreScopedToProviders() async throws {
         let file = boardFile()
         defer { try? FileManager.default.removeItem(at: file.deletingLastPathComponent()) }

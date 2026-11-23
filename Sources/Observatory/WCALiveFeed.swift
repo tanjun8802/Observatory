@@ -11,7 +11,7 @@ enum WCALiveFeed {
     private static let listingPrompt = """
         At each refresh, open the official WCA Live site at https://live.worldcubeassociation.org/ and show the competitions currently in progress. For each, display its name, location, and a direct link to its live results. If none are listed as in progress, say so. If the source is unavailable, report that live status could not be verified. Use read-only access.
         """
-    private enum Intent { case competitions, competitionsAndRecords }
+    private enum Intent { case competitions, records, competitionsAndRecords }
 
     // Accept a bounded grammar of list requests. A country, competitor filter, negation,
     // ranking or unfamiliar action leaves the whole prompt for the general Codex provider.
@@ -19,9 +19,11 @@ enum WCALiveFeed {
         guard monitor.kind == .codex, let prompt = monitor.prompt else { return nil }
         func normalize(_ input: String) -> String {
             input.lowercased().replacingOccurrences(of: site.absoluteString, with: "wca live")
-                .split { $0.isWhitespace || ".,!?:;()".contains($0) }.joined(separator: " ")
+                .replacingOccurrences(of: "https://live.worldcubeassociation.org", with: "wca live")
+                .split { $0.isWhitespace || ".,!?:;()/".contains($0) }.joined(separator: " ")
         }
-        var rest = normalize(prompt)
+        let request = normalize(prompt)
+        var rest = request
         func consume(_ pattern: String) -> Bool {
             guard let match = rest.range(of: "^(?:" + pattern + ")(?: +|$)", options: .regularExpression) else { return false }
             rest.removeSubrange(rest.startIndex..<match.upperBound)
@@ -31,11 +33,33 @@ enum WCALiveFeed {
         let source = #"(?:the )?(?:official )?wca live(?: site| website)?"#
         let active = #"(?:currently in progress|in progress|currently running|ongoing|current|active|live)"#
         let action = #"(?:(?:show|list|display|track|follow|include)(?: me)? )?(?:the )?"#
+        let join = #"(?:(?:and|also|then) )*"#
+        let item = #"(?:events?|(?:solve |result )?times?|results?|scores?|(?:competitor |holder )?names?|competitors?|record holders?|competition names?|competition locations?|competition venues?|locations?|venues?|dates?)"#
+        let fields = #"(?:(?:with|including|for each|showing) )?(?:the )?"# + item + #"(?:(?: and)? (?:the )?"# + item + ")*"
+        let scroll = join + #"(?:(?:make|keep) (?:it|(?:the |this )?list) scrollable(?: (?:in|inside|within) (?:the |this )?(?:feed|card))?|(?:contain|keep) (?:it|the list) (?:inside|within|in) (?:the |this )?(?:feed|card)(?: if the list is too long)?(?: (?:so )?i can scroll (?:it )?(?:manually)?)?)"#
+
+        // The records feed may cite WCA Live before the request, in the subject, or after the fields.
+        let preamble = #"(?:(?:at each refresh )?(?:open|use|check) "# + source + #"(?: at wca live)? (?:and )?)?"#
+        let recordAction = #"(?:(?:show|list|display|track|follow|include)(?: me)? )?(?:only )?(?:the )?"#
+        let recency = #"(?:latest|most recent|recent|newest)"#
+        let tiers = #"(?:wrs? (?:and )?crs? (?:and )?nrs?|world (?:and )?continental (?:and )?national)"#
+        let subject = "(?:records(?: \(tiers))?|\(tiers)(?: records)?)(?: only)?"
+        let recordsOnly = preamble + recordAction + "(?:\(source)(?:['’]s)? )?\(recency) (?:\(source) )?" + subject
+        if consume(recordsOnly) {
+            let posted = #"(?:(?:that (?:is|are) |as )?(?:only )?(?:reported|posted|listed|published|shown) )?"#
+            let onSource = posted + #"(?:on|from|by|at) "# + source + #"(?: only)?"#
+            let noHistory = #"(?:not|no|skip|omit|exclude|excluding|without) (?:the )?(?:historical|historic|archived) (?:ones|records|results|rankings|data)"#
+            guard request.contains("wca live") else { return nil }
+            while !rest.isEmpty {
+                guard consume(fields) || consume(onSource) || consume(noHistory) || consume(scroll) else { return nil }
+            }
+            return .records
+        }
+
         let base = normalize(listingPrompt)
         if rest == base || rest.hasPrefix(base + " ") {
             rest = rest.dropFirst(base.count).trimmingCharacters(in: .whitespaces)
         } else {
-            let request = rest
             let competitions = "(?:\(active) (?:\(source) )?competitions|(?:\(source) )?competitions (?:that are )?\(active)|\(source) \(active) competitions)"
             guard consume(action + competitions + "(?: (?:on|from|at) " + source + ")?") else { return nil }
             // The named source must belong to the competition request.
@@ -43,16 +67,12 @@ enum WCALiveFeed {
             _ = consume(#"(?:with|including) (?:their )?(?:names?|locations?|venues?|(?:direct )?(?:live )?results links?)(?:(?: and)? (?:their )?(?:names?|locations?|venues?|(?:direct )?(?:live )?results links?))*"#)
         }
 
-        let join = #"(?:(?:and|also|then) )*"#
         let records = join + #"(?:(?:show|include|list|display|add)(?: me)? )?(?:the )?(?:latest|recent|most recent) (?:live )?records"#
         let hasRecords = consume(records)
         if hasRecords {
-            let item = #"(?:events?|(?:solve |result )?times?|results?|scores?|(?:competitor |holder )?names?|competitors?|record holders?|competition locations?|competition venues?|locations?|venues?|dates?)"#
-            let fields = #"(?:(?:with|including|for each|showing) )?(?:the )?"# + item + #"(?:(?: and)? (?:the )?"# + item + ")*"
             _ = consume(fields)
         }
 
-        let scroll = join + #"(?:(?:make|keep) (?:it|(?:the |this )?list) scrollable(?: (?:in|inside|within) (?:the |this )?(?:feed|card))?|(?:contain|keep) (?:it|the list) (?:inside|within|in) (?:the |this )?(?:feed|card)(?: if the list is too long)?(?: (?:so )?i can scroll (?:it )?(?:manually)?)?)"#
         _ = consume(scroll)
         guard rest.isEmpty else { return nil }
         return hasRecords ? .competitionsAndRecords : .competitions
@@ -67,21 +87,13 @@ enum WCALiveFeed {
     static func fetch(_ monitor: Monitor, now: Date,
                       load: (URLRequest) async throws -> (Data, URLResponse)) async throws -> Reading {
         guard let intent = intent(monitor) else { throw Failure("This request is outside the WCA Live feed.") }
-        // WCA Live requests competitions starting since the same local calendar date one month ago.
-        var calendar = Calendar(identifier: .gregorian)
-        calendar.timeZone = .current
-        let monthAgo = calendar.date(byAdding: .month, value: -1, to: calendar.startOfDay(for: now))!
-        let from = monthAgo.formatted(Date.ISO8601FormatStyle(timeZone: calendar.timeZone).year().month().day())
-        let variables = try JSONEncoder().encode(["from": from])
-        async let competitionResult = section {
-            let payload: CompetitionList = try await query(competitionQuery, variables: variables, load: load)
-            return try competitionRows(payload.competitions, now: now)
-        }
+        async let competitionResult = intent == .records ? nil : loadCompetitions(now: now, load: load)
         var records: Result<[FeedRow], Failure>?
-        if intent == .competitionsAndRecords {
+        if intent != .competitions {
             records = try await section {
                 let payload: RecordList = try await query(recordQuery, load: load)
-                return try recordRows(payload.recentRecords)
+                let records = intent == .records ? payload.recentRecords.filter { ["WR", "CR", "NR"].contains($0.tag) } : payload.recentRecords
+                return try recordRows(records)
             }
         }
         let competitions = try await competitionResult
@@ -90,6 +102,7 @@ enum WCALiveFeed {
         var summary: [String] = []
         var verifiedSections = 0
         switch competitions {
+        case nil: break
         case .success(let entries):
             verifiedSections += 1
             rows += entries
@@ -111,10 +124,24 @@ enum WCALiveFeed {
         }
         let value = summary.joined(separator: " ")
         guard verifiedSections > 0 else { throw Failure(value) }
-        let partial = records != nil && verifiedSections == 1
+        let partial = intent == .competitionsAndRecords && verifiedSections == 1
         return Reading(value: value, detail: "WCA Live", observedAt: now,
                        presentation: FeedPresentation(kind: .list, rows: rows, isPartial: partial,
                                                       sourceName: "WCA Live", sourceURL: site))
+    }
+
+    private static func loadCompetitions(now: Date, load: (URLRequest) async throws -> (Data, URLResponse))
+        async throws -> Result<[FeedRow], Failure> {
+        // WCA Live requests competitions starting since the same local calendar date one month ago.
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = .current
+        let monthAgo = calendar.date(byAdding: .month, value: -1, to: calendar.startOfDay(for: now))!
+        let from = monthAgo.formatted(Date.ISO8601FormatStyle(timeZone: calendar.timeZone).year().month().day())
+        let variables = try JSONEncoder().encode(["from": from])
+        return try await section {
+            let payload: CompetitionList = try await query(competitionQuery, variables: variables, load: load)
+            return try competitionRows(payload.competitions, now: now)
+        }
     }
 
     private struct Failure: LocalizedError {

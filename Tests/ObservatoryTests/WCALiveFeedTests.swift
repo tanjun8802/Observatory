@@ -6,6 +6,9 @@ import Testing
     private let savedPrompt = """
         At each refresh, open the official WCA Live site at https://live.worldcubeassociation.org/ and show the competitions currently in progress. For each, display its name, location, and a direct link to its live results. If none are listed as in progress, say so. If the source is unavailable, report that live status could not be verified. Use read-only access.
         """
+    private let recordsOnlyPrompt = """
+        At each refresh, open the official WCA Live site at https://live.worldcubeassociation.org/ and show me the latest WR/CR/NR, the event, time, name, and the competition name that is only reported on the WCA live, not the historical ones. contain it inside the feed if the list is too long, I can scroll it manually
+        """
     private let recordsPrompt = " Show me the latest records, the event, time, name, and the competition locations."
     private let scrollPrompt = " contain it inside the feed if the list is too long, I can scroll it manually"
     private let now = Date(timeIntervalSince1970: 1_798_603_200) // 2026-12-30 04:00 UTC
@@ -118,6 +121,57 @@ import Testing
         let round: [String: Any] = ["id": "57", "competitionEvent": ["event": eventDetails, "competition": competition]]
         return ["tag": "NR", "type": type, "attemptResult": score,
                 "result": ["person": ["name": "Jane"], "round": round, "enteredAt": entered]]
+    }
+
+    @Test func recognizesRecentLiveRecordsWithoutInterceptingOtherSourcesOrFilters() {
+        var feed = monitor
+        for request in [
+            recordsOnlyPrompt,
+            "Show only the most recent world, continental and national records on WCA Live. Exclude historical results.",
+            "List WCA Live’s latest WRs, CRs and NRs with event, score, competitor name and competition name.",
+            "Track recent WCA Live records (WR/CR/NR) only. Make the list scrollable.",
+            "List recent records posted on the official WCA Live website, without archived records."
+        ] {
+            feed.prompt = request
+            #expect(WCALiveFeed.matches(feed), "Unmatched: \(request)")
+        }
+        for request in [
+            "List recent historical WR/CR/NR on WCA Live.", "List recent national records on WCA Live.",
+            "Show the latest records on WCA Live for the UK.", "Show the latest records on WCA Live for 3x3 only.",
+            "List recent records on WCA Live from 2020.", "List recent records from the WCA rankings.",
+            "Show the latest WR/CR/NR.", "List recent records on WCA Live and compare against all-time bests.",
+            recordsOnlyPrompt + " Include unofficial results from Reddit."
+        ] {
+            feed.prompt = request
+            #expect(!WCALiveFeed.matches(feed), "Should use Codex: \(request)")
+        }
+    }
+
+    @Test func recordsOnlyCallsRecentRecordsAndOmitsTheCompetitionListing() async throws {
+        let feed = Monitor(kind: .codex, title: "Renamed", prompt: recordsOnlyPrompt)
+        let records = ["WR", "CR", "NR", "PB"].map { tag in
+            var entry = record(event: "333", type: "single", score: 500, entered: "2026-12-29T11:45:00Z")
+            entry["tag"] = tag
+            return entry
+        }
+        let data = try JSONSerialization.data(withJSONObject: ["data": ["recentRecords": records]])
+        let reading = try await WCALiveFeed.fetch(feed, now: now) { request in
+            let url = try #require(request.url)
+            let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
+            let query = try #require(items.first { $0.name == "query" }?.value)
+            #expect(url.host == "live.worldcubeassociation.org" && url.path == "/api")
+            #expect(query.contains("recentRecords") && !query.contains("competitions("))
+            #expect(!items.contains { $0.name == "variables" })
+            return (data, HTTPURLResponse(url: url, statusCode: 200, httpVersion: nil, headerFields: nil)!)
+        }
+        #expect(reading.value == "3 recent live records (provisional).")
+        let rows = try #require(reading.presentation?.rows)
+        #expect(rows.map(\.title) == ["Event 333 · WR single", "Event 333 · CR single", "Event 333 · NR single"])
+        #expect(rows.allSatisfy { $0.detail.contains("Jane · Winter Open") && $0.value == "5.00 s" })
+        #expect(reading.presentation?.isPartial == false)
+        await #expect(throws: (any Error).self) {
+            try await WCALiveFeed.fetch(feed, now: now) { _ in throw URLError(.timedOut) }
+        }
     }
 
     private func combined(competitions: Data?, records: Data?) async throws -> Reading {

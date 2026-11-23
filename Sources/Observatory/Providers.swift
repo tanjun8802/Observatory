@@ -27,7 +27,7 @@ enum FeedProvider {
     private static let maximumSize = 4 * 1024 * 1024
 
     static func fetch(_ monitor: Monitor, key: String?) async throws -> Reading {
-        if monitor.kind == .codex {
+        if monitor.kind == .codex, RoundTripFlightFeed.search(for: monitor) == nil {
             guard let prompt = monitor.prompt, !prompt.isEmpty else { throw FeedError("This feed needs a prompt.") }
             if WeatherFeed.matches(monitor) { return try await WeatherFeed.fetch(monitor) }
             if WCALiveFeed.matches(monitor) { return try await WCALiveFeed.fetch(monitor) }
@@ -58,6 +58,23 @@ enum FeedProvider {
     // The transport is replaceable so fixtures exercise the same request and response handling.
     static func fetch(_ monitor: Monitor, key: String?,
                       load: (URLRequest) async throws -> (Data, URLResponse)) async throws -> Reading {
+        if let search = RoundTripFlightFeed.search(for: monitor) {
+            guard let key = key?.trimmingCharacters(in: .whitespacesAndNewlines), !key.isEmpty else {
+                throw FeedError("A SerpApi API key is required for live round-trip prices. Connect SerpApi or open this search in Google Flights.")
+            }
+            return try await RoundTripFlightFeed.fetch(search, key: try requiredKey(key, provider: "SerpApi")) { request in
+                let data: Data
+                let response: URLResponse
+                do { (data, response) = try await load(request) }
+                catch let error as FeedError { throw error }
+                catch {
+                    try Task.checkCancellation()
+                    throw FeedError("Could not connect to SerpApi.")
+                }
+                try validate(response)
+                return data
+            }
+        }
         let request = try makeRequest(monitor, key: key)
         let data: Data
         let response: URLResponse
